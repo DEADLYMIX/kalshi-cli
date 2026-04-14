@@ -5,6 +5,26 @@ from typing import Optional, Literal, Any
 from pydantic import BaseModel, Field, field_validator
 
 
+def _dollars_to_cents(v: Optional[str]) -> Optional[int]:
+    """Convert a dollar string like '0.4700' to integer cents (47)."""
+    if v is None or v == "" or v == "0.0000":
+        return None
+    try:
+        return int(round(float(v) * 100))
+    except (ValueError, TypeError):
+        return None
+
+
+def _fp_to_int(v: Optional[str]) -> int:
+    """Convert a floating-point string like '133915.88' to int."""
+    if v is None or v == "":
+        return 0
+    try:
+        return int(float(v))
+    except (ValueError, TypeError):
+        return 0
+
+
 # === Market Models ===
 
 
@@ -15,13 +35,27 @@ class Market(BaseModel):
     title: str
     subtitle: Optional[str] = None
     status: Literal["open", "closed", "settled", "active", "inactive", "finalized"] = "open"
-    yes_ask: Optional[int] = None  # Price in cents
+    # Integer cents (legacy) or None
+    yes_ask: Optional[int] = None
     yes_bid: Optional[int] = None
     no_ask: Optional[int] = None
     no_bid: Optional[int] = None
+    # Dollar-string fields (current API)
+    yes_ask_dollars: Optional[str] = None
+    yes_bid_dollars: Optional[str] = None
+    no_ask_dollars: Optional[str] = None
+    no_bid_dollars: Optional[str] = None
+    last_price_dollars: Optional[str] = None
+    previous_price_dollars: Optional[str] = None
+    previous_yes_ask_dollars: Optional[str] = None
+    previous_yes_bid_dollars: Optional[str] = None
+    # Volume fields — int (legacy) or fp string (current)
     volume: int = 0
     volume_24h: int = 0
+    volume_fp: Optional[str] = None
+    volume_24h_fp: Optional[str] = None
     open_interest: int = 0
+    open_interest_fp: Optional[str] = None
     close_time: Optional[datetime] = None
     expiration_time: Optional[datetime] = None
     result: Optional[Literal["yes", "no", "all_yes", "all_no"]] = None
@@ -44,6 +78,31 @@ class Market(BaseModel):
         if v == "":
             return None
         return v
+
+    def model_post_init(self, __context: Any) -> None:
+        """Normalize dollar-string fields to integer cents for uniform access."""
+        if self.yes_ask is None and self.yes_ask_dollars:
+            self.yes_ask = _dollars_to_cents(self.yes_ask_dollars)
+        if self.yes_bid is None and self.yes_bid_dollars:
+            self.yes_bid = _dollars_to_cents(self.yes_bid_dollars)
+        if self.no_ask is None and self.no_ask_dollars:
+            self.no_ask = _dollars_to_cents(self.no_ask_dollars)
+        if self.no_bid is None and self.no_bid_dollars:
+            self.no_bid = _dollars_to_cents(self.no_bid_dollars)
+        if self.last_price is None and self.last_price_dollars:
+            self.last_price = _dollars_to_cents(self.last_price_dollars)
+        if self.previous_price is None and self.previous_price_dollars:
+            self.previous_price = _dollars_to_cents(self.previous_price_dollars)
+        if self.previous_yes_ask is None and self.previous_yes_ask_dollars:
+            self.previous_yes_ask = _dollars_to_cents(self.previous_yes_ask_dollars)
+        if self.previous_yes_bid is None and self.previous_yes_bid_dollars:
+            self.previous_yes_bid = _dollars_to_cents(self.previous_yes_bid_dollars)
+        if self.volume == 0 and self.volume_fp:
+            self.volume = _fp_to_int(self.volume_fp)
+        if self.volume_24h == 0 and self.volume_24h_fp:
+            self.volume_24h = _fp_to_int(self.volume_24h_fp)
+        if self.open_interest == 0 and self.open_interest_fp:
+            self.open_interest = _fp_to_int(self.open_interest_fp)
 
     @property
     def spread(self) -> Optional[int]:
@@ -242,13 +301,27 @@ class Trade(BaseModel):
 
     trade_id: str
     ticker: str
-    count: int
-    yes_price: int
+    # API returns count_fp (string) or count (int) depending on version
+    count: int = 0
+    count_fp: Optional[str] = None
+    # API returns yes_price (int cents) or yes_price_dollars (string) depending on version
+    yes_price: int = 0
+    yes_price_dollars: Optional[str] = None
     no_price: Optional[int] = None
+    no_price_dollars: Optional[str] = None
     taker_side: Optional[Literal["yes", "no"]] = None
     created_time: Optional[datetime] = None
 
     model_config = {"extra": "allow"}
+
+    def model_post_init(self, __context: Any) -> None:
+        # Normalize dollar-string fields to integer cents
+        if self.yes_price == 0 and self.yes_price_dollars:
+            self.yes_price = int(float(self.yes_price_dollars) * 100)
+        if self.no_price is None and self.no_price_dollars:
+            self.no_price = int(float(self.no_price_dollars) * 100)
+        if self.count == 0 and self.count_fp:
+            self.count = int(float(self.count_fp))
 
 
 class Candlestick(BaseModel):

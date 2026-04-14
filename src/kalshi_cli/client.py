@@ -37,7 +37,7 @@ from .exceptions import (
 )
 
 
-_SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+_SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 def _validate_identifier(value: str, label: str = "identifier") -> str:
@@ -45,7 +45,7 @@ def _validate_identifier(value: str, label: str = "identifier") -> str:
     if not value or not _SAFE_ID_PATTERN.match(value):
         raise ValueError(
             f"Invalid {label}: '{value}'. "
-            f"Must contain only alphanumeric characters, hyphens, and underscores."
+            f"Must contain only alphanumeric characters, hyphens, underscores, and dots."
         )
     return value
 
@@ -280,18 +280,39 @@ class KalshiClient:
         _validate_identifier(ticker, "ticker")
         params = {"depth": depth} if depth > 0 else None
         data = self._request("GET", f"/markets/{ticker}/orderbook", params=params, auth_required=False)
-        orderbook_data = data.get("orderbook", {})
 
-        yes_bids = [
-            OrderBookLevel(price=level[0], quantity=level[1])
-            for level in (orderbook_data.get("yes") or [])
-            if level
-        ]
-        no_bids = [
-            OrderBookLevel(price=level[0], quantity=level[1])
-            for level in (orderbook_data.get("no") or [])
-            if level
-        ]
+        # Handle both legacy (orderbook with int arrays) and current (orderbook_fp with dollar strings)
+        orderbook_data = data.get("orderbook", {})
+        orderbook_fp = data.get("orderbook_fp", {})
+
+        if orderbook_fp:
+            yes_bids = [
+                OrderBookLevel(
+                    price=int(round(float(level[0]) * 100)),
+                    quantity=int(float(level[1])),
+                )
+                for level in (orderbook_fp.get("yes_dollars") or [])
+                if level
+            ]
+            no_bids = [
+                OrderBookLevel(
+                    price=int(round(float(level[0]) * 100)),
+                    quantity=int(float(level[1])),
+                )
+                for level in (orderbook_fp.get("no_dollars") or [])
+                if level
+            ]
+        else:
+            yes_bids = [
+                OrderBookLevel(price=level[0], quantity=level[1])
+                for level in (orderbook_data.get("yes") or [])
+                if level
+            ]
+            no_bids = [
+                OrderBookLevel(price=level[0], quantity=level[1])
+                for level in (orderbook_data.get("no") or [])
+                if level
+            ]
 
         return OrderBook(ticker=ticker, yes_bids=yes_bids, no_bids=no_bids)
 
@@ -341,14 +362,36 @@ class KalshiClient:
         candlesticks = []
         for c in markets[0].get("candlesticks", []):
             price = c.get("price", {})
+
+            # Handle both legacy (int cents) and current (dollar strings)
+            def _price_val(key: str) -> int:
+                # Try dollar string first (e.g., "open_dollars"), then legacy int
+                dollar_key = f"{key}_dollars"
+                if dollar_key in price:
+                    try:
+                        return int(round(float(price[dollar_key]) * 100))
+                    except (ValueError, TypeError):
+                        pass
+                return price.get(key, 0)
+
+            # Volume: try fp string, then legacy int
+            vol = 0
+            if c.get("volume_fp"):
+                try:
+                    vol = int(float(c["volume_fp"]))
+                except (ValueError, TypeError):
+                    pass
+            else:
+                vol = c.get("volume", 0)
+
             candlesticks.append(
                 Candlestick(
                     end_period_ts=c.get("end_period_ts", 0),
-                    open=price.get("open", 0),
-                    high=price.get("high", 0),
-                    low=price.get("low", 0),
-                    close=price.get("close", 0),
-                    volume=c.get("volume", 0),
+                    open=_price_val("open"),
+                    high=_price_val("high"),
+                    low=_price_val("low"),
+                    close=_price_val("close"),
+                    volume=vol,
                 )
             )
         return candlesticks
