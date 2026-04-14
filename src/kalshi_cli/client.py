@@ -86,6 +86,7 @@ class KalshiClient:
     """
 
     BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+    DEMO_URL = "https://demo-api.kalshi.co/trade-api/v2"
 
     def __init__(
         self,
@@ -107,7 +108,12 @@ class KalshiClient:
         else:
             self._auth = auth
 
-        self._base_url = base_url or self.BASE_URL
+        if base_url:
+            self._base_url = base_url
+        else:
+            import os
+            profile = os.getenv("KALSHI_PROFILE", "").lower()
+            self._base_url = self.DEMO_URL if profile == "demo" else self.BASE_URL
         if not self._base_url.startswith("https://"):
             raise ValueError(
                 f"base_url must use HTTPS (got '{self._base_url}'). "

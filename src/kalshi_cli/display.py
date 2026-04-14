@@ -23,6 +23,48 @@ from .models import (
 console = Console()
 
 
+# === Sparklines ===
+
+SPARK_CHARS = "▁▂▃▄▅▆▇█"
+
+
+def sparkline(values: list[float], width: int = 8) -> str:
+    """Generate a Unicode sparkline from a list of values.
+
+    Args:
+        values: Data points to visualize
+        width: Max characters to use
+
+    Returns:
+        A string of sparkline characters, e.g., "▁▃▅▇▅▃"
+    """
+    if not values:
+        return ""
+
+    # Downsample if needed
+    if len(values) > width:
+        step = len(values) / width
+        values = [values[int(i * step)] for i in range(width)]
+
+    lo = min(values)
+    hi = max(values)
+    rng = hi - lo if hi != lo else 1
+
+    return "".join(
+        SPARK_CHARS[min(int((v - lo) / rng * (len(SPARK_CHARS) - 1)), len(SPARK_CHARS) - 1)]
+        for v in values
+    )
+
+
+def sparkline_with_color(values: list[float], width: int = 8) -> str:
+    """Sparkline colored green/red based on trend direction."""
+    if not values:
+        return ""
+    spark = sparkline(values, width)
+    color = "green" if values[-1] >= values[0] else "red"
+    return f"[{color}]{spark}[/{color}]"
+
+
 # === Basic Formatting ===
 
 

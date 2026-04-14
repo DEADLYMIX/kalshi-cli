@@ -2,7 +2,21 @@
 
 import typer
 
-from .commands import reference, markets, portfolio, trading
+from .commands import (
+    reference,
+    markets,
+    portfolio,
+    trading,
+    watchlist,
+    alerts,
+    export,
+    snapshots,
+    analytics,
+    templates,
+    bulk,
+    profiles,
+    stream,
+)
 
 app = typer.Typer(
     name="kalshi",
@@ -41,6 +55,57 @@ app.command(name="buy")(trading.buy)
 app.command(name="sell")(trading.sell)
 app.command(name="close")(trading.close_position)
 app.command(name="cancel-all")(trading.cancel_all)
+
+
+# === Watchlist Commands ===
+app.command(name="watch")(watchlist.watch)
+app.command(name="watch-add")(watchlist.watch_add)
+app.command(name="watch-rm")(watchlist.watch_remove)
+app.command(name="watch-clear")(watchlist.watch_clear)
+
+
+# === Alert Commands ===
+app.command(name="alert-add")(alerts.alert_add)
+app.command(name="alerts")(alerts.alert_list)
+app.command(name="alert-rm")(alerts.alert_remove)
+app.command(name="alert-check")(alerts.alert_check)
+app.command(name="alert-clear")(alerts.alert_clear)
+
+
+# === Export Commands ===
+app.command(name="export-fills")(export.export_fills)
+app.command(name="export-settlements")(export.export_settlements)
+
+
+# === Snapshot & P&L Commands ===
+app.command(name="snapshot")(snapshots.snapshot_take)
+app.command(name="pnl")(snapshots.snapshot_history)
+
+
+# === Analytics Commands ===
+app.command(name="stats")(analytics.stats)
+
+
+# === Template Commands ===
+app.command(name="template-save")(templates.template_save)
+app.command(name="templates")(templates.template_list)
+app.command(name="template-rm")(templates.template_remove)
+app.command(name="quick")(templates.template_run)
+
+
+# === Bulk Commands ===
+app.command(name="bulk-buy")(bulk.bulk_buy)
+app.command(name="bulk-sell")(bulk.bulk_sell)
+
+
+# === Profile Commands ===
+app.command(name="profiles")(profiles.profile_list)
+app.command(name="profile-set")(profiles.profile_set)
+app.command(name="profile")(profiles.profile_current)
+
+
+# === Streaming Commands ===
+app.command(name="stream")(stream.stream)
 
 
 # === Reference Commands ===

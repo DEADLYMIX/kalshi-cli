@@ -17,18 +17,30 @@ from cryptography.hazmat.backends import default_backend
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
 
-_env_loaded = False
+_env_loaded: Optional[str] = None
 
 
-def _ensure_env_loaded() -> None:
-    """Load credentials from ~/.kalshi/.env on first use (not at import time)."""
+def _ensure_env_loaded(profile: Optional[str] = None) -> None:
+    """Load credentials from ~/.kalshi/.env on first use (not at import time).
+
+    If a profile is specified, also loads ~/.kalshi/<profile>.env which can
+    override the default credentials.
+    """
     global _env_loaded
-    if _env_loaded:
+    effective = profile or "default"
+    if _env_loaded == effective:
         return
-    _env_loaded = True
+    _env_loaded = effective
+
     kalshi_env = Path.home() / ".kalshi" / ".env"
     if kalshi_env.exists():
         load_dotenv(kalshi_env)
+
+    # Profile-specific env overrides (e.g., ~/.kalshi/demo.env)
+    if profile:
+        profile_env = Path.home() / ".kalshi" / f"{profile}.env"
+        if profile_env.exists():
+            load_dotenv(profile_env, override=True)
 
 
 class AuthProvider(Protocol):
@@ -175,7 +187,8 @@ def load_credentials_from_env() -> Optional[Credentials]:
     Returns:
         Credentials if configured, None otherwise
     """
-    _ensure_env_loaded()
+    profile = os.getenv("KALSHI_PROFILE")
+    _ensure_env_loaded(profile)
 
     api_key = os.getenv("KALSHI_API_KEY")
     if not api_key:
