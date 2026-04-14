@@ -1,6 +1,9 @@
 """Kalshi API client for programmatic access."""
 
+import re
+import uuid
 from typing import Optional, Literal, Union
+from urllib.parse import quote, urlencode
 import requests
 
 from .models import (
@@ -32,6 +35,19 @@ from .exceptions import (
     NotFoundError,
     RateLimitError,
 )
+
+
+_SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _validate_identifier(value: str, label: str = "identifier") -> str:
+    """Validate that a user-supplied identifier is safe for URL inclusion."""
+    if not value or not _SAFE_ID_PATTERN.match(value):
+        raise ValueError(
+            f"Invalid {label}: '{value}'. "
+            f"Must contain only alphanumeric characters, hyphens, and underscores."
+        )
+    return value
 
 
 class KalshiClient:
@@ -92,6 +108,11 @@ class KalshiClient:
             self._auth = auth
 
         self._base_url = base_url or self.BASE_URL
+        if not self._base_url.startswith("https://"):
+            raise ValueError(
+                f"base_url must use HTTPS (got '{self._base_url}'). "
+                f"Sending signed requests over plain HTTP would expose credentials."
+            )
         self._timeout = timeout
         self._session = requests.Session()
 
@@ -100,6 +121,7 @@ class KalshiClient:
         method: str,
         path: str,
         body: Optional[dict] = None,
+        params: Optional[dict] = None,
         auth_required: bool = True,
     ) -> dict:
         """Make an API request.
@@ -108,6 +130,7 @@ class KalshiClient:
             method: HTTP method (GET, POST, DELETE)
             path: API path (e.g., "/markets")
             body: Request body for POST/PUT
+            params: Query parameters (properly URL-encoded by requests)
             auth_required: Whether authentication is required
 
         Returns:
@@ -121,13 +144,20 @@ class KalshiClient:
         """
         headers = {"Content-Type": "application/json"}
 
+        # Build the full path for auth signing (must include query string)
+        if params:
+            query_string = urlencode({k: v for k, v in params.items() if v is not None})
+            full_path = f"{path}?{query_string}" if query_string else path
+        else:
+            full_path = path
+
         if auth_required:
             if not self._auth:
                 raise AuthenticationError(
                     "Authentication required. Set KALSHI_API_KEY and "
                     "KALSHI_PRIVATE_KEY_PATH environment variables."
                 )
-            auth_headers = self._auth.get_headers(method, f"/trade-api/v2{path}")
+            auth_headers = self._auth.get_headers(method, f"/trade-api/v2{full_path}")
             headers.update(auth_headers)
 
         url = f"{self._base_url}{path}"
@@ -136,6 +166,7 @@ class KalshiClient:
             method=method,
             url=url,
             headers=headers,
+            params=params,
             json=body,
             timeout=self._timeout,
         )
@@ -146,10 +177,11 @@ class KalshiClient:
             retry_after = int(response.headers.get("Retry-After", 60))
             raise RateLimitError(retry_after)
         elif response.status_code >= 400:
+            # Truncate error message to avoid leaking sensitive API response data
+            message = response.text[:200] if response.text else "Unknown error"
             raise APIError(
                 response.status_code,
-                response.text[:200],
-                response.text,
+                message,
             )
 
         if response.status_code == 204:
@@ -194,26 +226,25 @@ class KalshiClient:
         Returns:
             MarketsResponse with list of markets
         """
-        params = [f"limit={limit}"]
+        params: dict = {"limit": limit}
         if status:
-            params.append(f"status={status}")
+            params["status"] = status
         if ticker:
-            params.append(f"tickers={ticker}")
+            params["tickers"] = ticker
         if tickers:
-            params.append(f"tickers={','.join(tickers)}")
+            params["tickers"] = ",".join(tickers)
         if series_ticker:
-            params.append(f"series_ticker={series_ticker}")
+            params["series_ticker"] = series_ticker
         if event_ticker:
-            params.append(f"event_ticker={event_ticker}")
+            params["event_ticker"] = event_ticker
         if min_close_ts:
-            params.append(f"min_close_ts={min_close_ts}")
+            params["min_close_ts"] = min_close_ts
         if max_close_ts:
-            params.append(f"max_close_ts={max_close_ts}")
+            params["max_close_ts"] = max_close_ts
         if cursor:
-            params.append(f"cursor={cursor}")
+            params["cursor"] = cursor
 
-        path = f"/markets?{'&'.join(params)}"
-        data = self._request("GET", path, auth_required=False)
+        data = self._request("GET", "/markets", params=params, auth_required=False)
 
         return MarketsResponse(
             markets=[Market(**m) for m in data.get("markets", [])],
@@ -226,6 +257,7 @@ class KalshiClient:
         Raises:
             NotFoundError: If the market doesn't exist
         """
+        _validate_identifier(ticker, "ticker")
         try:
             data = self._request("GET", f"/markets/{ticker}", auth_required=False)
             return Market(**data.get("market", {}))
@@ -239,11 +271,9 @@ class KalshiClient:
             ticker: Market ticker
             depth: Number of price levels to return (0 = all)
         """
-        path = f"/markets/{ticker}/orderbook"
-        if depth > 0:
-            path += f"?depth={depth}"
-
-        data = self._request("GET", path, auth_required=False)
+        _validate_identifier(ticker, "ticker")
+        params = {"depth": depth} if depth > 0 else None
+        data = self._request("GET", f"/markets/{ticker}/orderbook", params=params, auth_required=False)
         orderbook_data = data.get("orderbook", {})
 
         yes_bids = [
@@ -266,11 +296,11 @@ class KalshiClient:
         cursor: Optional[str] = None,
     ) -> TradesResponse:
         """Get recent public trades for a market."""
-        path = f"/markets/trades?ticker={ticker}&limit={limit}"
+        params: dict = {"ticker": ticker, "limit": limit}
         if cursor:
-            path += f"&cursor={cursor}"
+            params["cursor"] = cursor
 
-        data = self._request("GET", path, auth_required=False)
+        data = self._request("GET", "/markets/trades", params=params, auth_required=False)
         return TradesResponse(
             trades=[Trade(**t) for t in data.get("trades", [])],
             cursor=data.get("cursor"),
@@ -291,15 +321,13 @@ class KalshiClient:
             end_ts: End timestamp (Unix seconds)
             period_interval: Candle period in minutes (1, 60, or 1440)
         """
-        path = (
-            f"/markets/candlesticks?"
-            f"market_tickers={ticker}&"
-            f"start_ts={start_ts}&"
-            f"end_ts={end_ts}&"
-            f"period_interval={period_interval}"
-        )
-
-        data = self._request("GET", path, auth_required=False)
+        params = {
+            "market_tickers": ticker,
+            "start_ts": start_ts,
+            "end_ts": end_ts,
+            "period_interval": period_interval,
+        }
+        data = self._request("GET", "/markets/candlesticks", params=params, auth_required=False)
         markets = data.get("markets", [])
         if not markets:
             return []
@@ -329,16 +357,15 @@ class KalshiClient:
         cursor: Optional[str] = None,
     ) -> EventsResponse:
         """Get a list of events."""
-        params = [f"limit={limit}"]
+        params: dict = {"limit": limit}
         if series_ticker:
-            params.append(f"series_ticker={series_ticker}")
+            params["series_ticker"] = series_ticker
         if status:
-            params.append(f"status={status}")
+            params["status"] = status
         if cursor:
-            params.append(f"cursor={cursor}")
+            params["cursor"] = cursor
 
-        path = f"/events?{'&'.join(params)}"
-        data = self._request("GET", path, auth_required=False)
+        data = self._request("GET", "/events", params=params, auth_required=False)
         return EventsResponse(
             events=[Event(**e) for e in data.get("events", [])],
             cursor=data.get("cursor"),
@@ -350,23 +377,22 @@ class KalshiClient:
         with_markets: bool = True,
     ) -> Event:
         """Get a specific event."""
-        path = f"/events/{event_ticker}"
-        if with_markets:
-            path += "?with_nested_markets=true"
-
+        _validate_identifier(event_ticker, "event_ticker")
+        params = {"with_nested_markets": "true"} if with_markets else None
         try:
-            data = self._request("GET", path, auth_required=False)
+            data = self._request("GET", f"/events/{event_ticker}", params=params, auth_required=False)
             return Event(**data.get("event", {}))
         except NotFoundError:
             raise NotFoundError("Event", event_ticker)
 
     def get_series(self, limit: int = 100) -> list[Series]:
         """Get a list of series."""
-        data = self._request("GET", f"/series?limit={limit}", auth_required=False)
+        data = self._request("GET", "/series", params={"limit": limit}, auth_required=False)
         return [Series(**s) for s in data.get("series", [])]
 
     def get_series_info(self, series_ticker: str) -> Series:
         """Get details for a specific series."""
+        _validate_identifier(series_ticker, "series_ticker")
         try:
             data = self._request(
                 "GET", f"/series/{series_ticker}", auth_required=False
@@ -391,18 +417,17 @@ class KalshiClient:
         cursor: Optional[str] = None,
     ) -> list[Position]:
         """Get all positions."""
-        params = [f"limit={limit}"]
+        params: dict = {"limit": limit}
         if ticker:
-            params.append(f"ticker={ticker}")
+            params["ticker"] = ticker
         if event_ticker:
-            params.append(f"event_ticker={event_ticker}")
+            params["event_ticker"] = event_ticker
         if settlement_status:
-            params.append(f"settlement_status={settlement_status}")
+            params["settlement_status"] = settlement_status
         if cursor:
-            params.append(f"cursor={cursor}")
+            params["cursor"] = cursor
 
-        path = f"/portfolio/positions?{'&'.join(params)}"
-        data = self._request("GET", path)
+        data = self._request("GET", "/portfolio/positions", params=params)
         return [Position(**p) for p in data.get("market_positions", [])]
 
     def get_position(self, ticker: str) -> Optional[Position]:
@@ -424,18 +449,18 @@ class KalshiClient:
         cursor: Optional[str] = None,
     ) -> list[Order]:
         """Get orders."""
-        params = [f"status={status}", f"limit={limit}"]
+        params: dict = {"status": status, "limit": limit}
         if ticker:
-            params.append(f"ticker={ticker}")
+            params["ticker"] = ticker
         if cursor:
-            params.append(f"cursor={cursor}")
+            params["cursor"] = cursor
 
-        path = f"/portfolio/orders?{'&'.join(params)}"
-        data = self._request("GET", path)
+        data = self._request("GET", "/portfolio/orders", params=params)
         return [Order(**o) for o in data.get("orders", [])]
 
     def get_order(self, order_id: str) -> Order:
         """Get a specific order."""
+        _validate_identifier(order_id, "order_id")
         try:
             data = self._request("GET", f"/portfolio/orders/{order_id}")
             return Order(**data.get("order", {}))
@@ -449,14 +474,13 @@ class KalshiClient:
         cursor: Optional[str] = None,
     ) -> list[Fill]:
         """Get trade fills (execution history)."""
-        params = [f"limit={limit}"]
+        params: dict = {"limit": limit}
         if ticker:
-            params.append(f"ticker={ticker}")
+            params["ticker"] = ticker
         if cursor:
-            params.append(f"cursor={cursor}")
+            params["cursor"] = cursor
 
-        path = f"/portfolio/fills?{'&'.join(params)}"
-        data = self._request("GET", path)
+        data = self._request("GET", "/portfolio/fills", params=params)
         return [Fill(**f) for f in data.get("fills", [])]
 
     def get_settlements(
@@ -467,16 +491,15 @@ class KalshiClient:
         cursor: Optional[str] = None,
     ) -> list[Settlement]:
         """Get settlement history."""
-        params = [f"limit={limit}"]
+        params: dict = {"limit": limit}
         if min_ts:
-            params.append(f"min_ts={min_ts}")
+            params["min_ts"] = min_ts
         if ticker:
-            params.append(f"ticker={ticker}")
+            params["ticker"] = ticker
         if cursor:
-            params.append(f"cursor={cursor}")
+            params["cursor"] = cursor
 
-        path = f"/portfolio/settlements?{'&'.join(params)}"
-        data = self._request("GET", path)
+        data = self._request("GET", "/portfolio/settlements", params=params)
         return [Settlement(**s) for s in data.get("settlements", [])]
 
     # === Trading (Auth Required) ===
@@ -515,6 +538,7 @@ class KalshiClient:
             "action": action,
             "count": count,
             "type": order_type,
+            "client_order_id": str(uuid.uuid4()),
         }
 
         if price is not None:
@@ -538,6 +562,7 @@ class KalshiClient:
 
         Returns True if cancelled successfully.
         """
+        _validate_identifier(order_id, "order_id")
         try:
             self._request("DELETE", f"/portfolio/orders/{order_id}")
             return True

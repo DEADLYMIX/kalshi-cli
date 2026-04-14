@@ -16,10 +16,9 @@ class AuthenticationError(KalshiError):
 class APIError(KalshiError):
     """Raised when the API returns an error."""
 
-    def __init__(self, status_code: int, message: str, response_body: str = ""):
+    def __init__(self, status_code: int, message: str):
         self.status_code = status_code
         self.message = message
-        self.response_body = response_body
         super().__init__(f"API Error {status_code}: {message}")
 
 

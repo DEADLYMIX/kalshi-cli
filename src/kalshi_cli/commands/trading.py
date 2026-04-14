@@ -1,6 +1,7 @@
 """Trading-related CLI commands."""
 
 import sys
+import uuid
 import typer
 import json
 import fnmatch
@@ -14,6 +15,13 @@ from ..display import format_pnl, format_price
 from ..exceptions import AuthenticationError, NotFoundError, APIError
 
 console = Console()
+
+# Maximum order size without explicit --force override
+MAX_ORDER_SIZE = 1000
+
+# Valid price range for Kalshi binary contracts (cents)
+MIN_PRICE = 1
+MAX_PRICE = 99
 
 
 def order_cmd(
@@ -58,6 +66,19 @@ def order_cmd(
         console.print("[red]Error: price is required for limit orders[/red]")
         raise typer.Exit(1)
 
+    if count < 1:
+        console.print("[red]Error: count must be at least 1[/red]")
+        raise typer.Exit(1)
+
+    if count > MAX_ORDER_SIZE and not force:
+        console.print(f"[red]Error: count {count} exceeds safety limit of {MAX_ORDER_SIZE}[/red]")
+        console.print("[yellow]Use --force to override this limit[/yellow]")
+        raise typer.Exit(1)
+
+    if price is not None and (price < MIN_PRICE or price > MAX_PRICE):
+        console.print(f"[red]Error: price must be between {MIN_PRICE} and {MAX_PRICE} cents[/red]")
+        raise typer.Exit(1)
+
     client = KalshiClient()
 
     # Fetch current market prices for context
@@ -77,14 +98,19 @@ def order_cmd(
         # Market order - use current ask for buys, current bid for sells
         if action == "buy":
             if side == "yes":
-                order_price = market.yes_ask or 99
+                order_price = market.yes_ask
             else:
-                order_price = market.no_ask or 99
+                order_price = market.no_ask
         else:  # sell
             if side == "yes":
-                order_price = market.yes_bid or 1
+                order_price = market.yes_bid
             else:
-                order_price = market.no_bid or 1
+                order_price = market.no_bid
+
+        if not order_price:
+            console.print("[red]Error: No liquidity available for this market order[/red]")
+            console.print("[yellow]The market has no resting orders on this side. Use a limit order with --price instead.[/yellow]")
+            raise typer.Exit(1)
 
     # Confirm with user
     console.print(Panel("[bold]Order Confirmation[/bold]"))
@@ -352,7 +378,11 @@ def close_position(
             raise typer.Exit(0)
 
     # Execute sell order
-    sell_price = price if price else (current_bid or 1)
+    if not price and not current_bid:
+        console.print("[red]Error: No liquidity available for market close[/red]")
+        console.print("[yellow]Use --price to specify a limit price instead.[/yellow]")
+        raise typer.Exit(1)
+    sell_price = price if price else current_bid
     order_type = "limit" if price else "market"
 
     try:

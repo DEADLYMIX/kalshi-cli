@@ -494,7 +494,7 @@ def find(
     encoded_query = quote(query)
     url = f"{v1_base}/search/series?query={encoded_query}&order_by=querymatch&page_size={fetch_limit}&fuzzy_threshold=4"
 
-    response = requests.get(url)
+    response = requests.get(url, timeout=30)
 
     if response.status_code == 200:
         data = response.json()
@@ -589,7 +589,7 @@ def find(
         console.print(table)
         console.print(f"\n[dim]Use: kalshi market <TICKER> for details[/dim]")
     else:
-        console.print(f"[red]Error {response.status_code}:[/red] {response.text}")
+        console.print(f"[red]Error {response.status_code}:[/red] Search request failed")
         raise typer.Exit(1)
 
 
@@ -653,6 +653,10 @@ def rules(
 
     if not contract_url:
         console.print(f"[yellow]No rules PDF found for series {series_ticker}[/yellow]")
+        raise typer.Exit(1)
+
+    if not contract_url.startswith("https://"):
+        console.print(f"[red]Error: Contract URL is not HTTPS — refusing to open: {contract_url}[/red]")
         raise typer.Exit(1)
 
     if url_only:

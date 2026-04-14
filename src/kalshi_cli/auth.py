@@ -1,10 +1,12 @@
 """Kalshi API authentication utilities."""
 
 import os
+import stat
 import time
 import base64
+import warnings
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Protocol, TYPE_CHECKING
 
 from dotenv import load_dotenv
@@ -12,13 +14,21 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.backends import default_backend
 
-# Auto-load credentials from ~/.kalshi/.env if it exists
-_kalshi_env = Path.home() / ".kalshi" / ".env"
-if _kalshi_env.exists():
-    load_dotenv(_kalshi_env)
-
 if TYPE_CHECKING:
     from cryptography.hazmat.primitives.asymmetric.rsa import RSAPrivateKey
+
+_env_loaded = False
+
+
+def _ensure_env_loaded() -> None:
+    """Load credentials from ~/.kalshi/.env on first use (not at import time)."""
+    global _env_loaded
+    if _env_loaded:
+        return
+    _env_loaded = True
+    kalshi_env = Path.home() / ".kalshi" / ".env"
+    if kalshi_env.exists():
+        load_dotenv(kalshi_env)
 
 
 class AuthProvider(Protocol):
@@ -41,8 +51,11 @@ class AuthProvider(Protocol):
 class Credentials:
     """API credentials container."""
 
-    api_key: str
-    private_key: "RSAPrivateKey"
+    api_key: str = field(repr=False)
+    private_key: "RSAPrivateKey" = field(repr=False)
+
+    def __repr__(self) -> str:
+        return "Credentials(api_key='***', private_key=<redacted>)"
 
 
 class KalshiAuth:
@@ -89,6 +102,24 @@ class KalshiAuth:
         }
 
 
+def _check_key_file_permissions(path: Path) -> None:
+    """Warn if key file has overly permissive permissions."""
+    try:
+        file_stat = path.stat()
+        mode = file_stat.st_mode
+        if mode & (stat.S_IRGRP | stat.S_IWGRP | stat.S_IXGRP |
+                    stat.S_IROTH | stat.S_IWOTH | stat.S_IXOTH):
+            permissions = oct(mode & 0o777)
+            warnings.warn(
+                f"Private key file '{path}' has permissions {permissions}. "
+                f"This is too open — other users can read your key. "
+                f"Run: chmod 600 '{path}'",
+                stacklevel=3,
+            )
+    except OSError:
+        pass  # Can't check permissions on this platform
+
+
 def load_private_key_from_file(path: Path) -> "RSAPrivateKey":
     """Load RSA private key from PEM file.
 
@@ -102,6 +133,7 @@ def load_private_key_from_file(path: Path) -> "RSAPrivateKey":
         FileNotFoundError: If file doesn't exist
         ValueError: If file is not a valid PEM key
     """
+    _check_key_file_permissions(path)
     with open(path, "rb") as f:
         return serialization.load_pem_private_key(
             f.read(), password=None, backend=default_backend()
@@ -143,6 +175,8 @@ def load_credentials_from_env() -> Optional[Credentials]:
     Returns:
         Credentials if configured, None otherwise
     """
+    _ensure_env_loaded()
+
     api_key = os.getenv("KALSHI_API_KEY")
     if not api_key:
         return None
